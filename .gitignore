@@ -117,3 +117,4 @@ tramp
 # Project specific
 api.db
 result_*.json
+sample-env
