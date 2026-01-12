@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  mariadb:
+    image: mariadb:11.4 # Latest LTS version, ARM64 compatible for M2
+    container_name: http-api-mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: SCHOOL_DB
+      MYSQL_USER: api_user
+      MYSQL_PASSWORD: api_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d # For initialization scripts
+    networks:
+      - http-api-network
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  adminer:
+    image: adminer:latest
+    container_name: http-api-adminer
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    networks:
+      - http-api-network
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      ADMINER_DEFAULT_SERVER: mariadb
+      ADMINER_DESIGN: dracula # Nice dark theme
+
+volumes:
+  mariadb_data:
+    driver: local
+
+networks:
+  http-api-network:
+    driver: bridge
