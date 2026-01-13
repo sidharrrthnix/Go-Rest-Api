@@ -4,22 +4,76 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/go-playground/validator/v10"
 	"http-api.com/models"
 	"http-api.com/respository/sqlconnect"
 )
 
-// Helper: write JSON error response
+// Global validator instance (reuse across requests for performance)
+var validate = validator.New()
+
+// ============================================================================
+// RESPONSE HELPERS
+// ============================================================================
+
+// writeJSONError sends a JSON error response
 func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "error",
 		"message": msg,
 	})
 }
 
-// GET /teachers - Get all teachers with optional filters
+// writeJSONSuccess sends a JSON success response with data
+func writeJSONSuccess(w http.ResponseWriter, code int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   data,
+	})
+}
+
+// writeJSONList sends a JSON success response with a list and count
+func writeJSONList(w http.ResponseWriter, code int, data interface{}, count int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"count":  count,
+		"data":   data,
+	})
+}
+
+// formatValidationErrors converts validator errors to readable message
+func formatValidationErrors(errs validator.ValidationErrors) string {
+	var messages []string
+	for _, err := range errs {
+		switch err.Tag() {
+		case "required":
+			messages = append(messages, err.Field()+" is required")
+		case "email":
+			messages = append(messages, err.Field()+" must be a valid email")
+		case "min":
+			messages = append(messages, err.Field()+" must be at least "+err.Param()+" characters")
+		case "max":
+			messages = append(messages, err.Field()+" must be at most "+err.Param()+" characters")
+		default:
+			messages = append(messages, err.Field()+" validation failed")
+		}
+	}
+	return strings.Join(messages, "; ")
+}
+
+// ============================================================================
+// HANDLERS
+// ============================================================================
+
+// GET /teachers - Get all teachers with optional filters and sorting
 func GetTeachersHandler(w http.ResponseWriter, r *http.Request) {
 	var teachers []models.Teacher
 	teachers, err := sqlconnect.GetTeachersDbHandler(teachers, r)
@@ -27,25 +81,12 @@ func GetTeachersHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	response := struct {
-		Status string           `json:"status"`
-		Count  int              `json:"count"`
-		Data   []models.Teacher `json:"data"`
-	}{
-		Status: "success",
-		Count:  len(teachers),
-		Data:   teachers,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSONList(w, http.StatusOK, teachers, len(teachers))
 }
 
 // GET /teachers/{id} - Get single teacher by ID
 func GetOneTeacherHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid ID")
 		return
@@ -56,30 +97,38 @@ func GetOneTeacherHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, err.Error())
 		return
 	}
-
-	response := struct {
-		Status string         `json:"status"`
-		Data   models.Teacher `json:"data"`
-	}{
-		Status: "success",
-		Data:   teacher,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSONSuccess(w, http.StatusOK, teacher)
 }
 
 // POST /teachers - Add new teachers
 func AddTeacherHandler(w http.ResponseWriter, r *http.Request) {
 	var newTeachers []models.Teacher
-	if err := json.NewDecoder(r.Body).Decode(&newTeachers); err != nil {
+
+	// Strict decoder blocks unknown fields
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&newTeachers); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if len(newTeachers) == 0 {
-		writeJSONError(w, http.StatusBadRequest, "No teachers to add")
+		writeJSONError(w, http.StatusBadRequest, "At least one teacher is required")
 		return
+	}
+
+	// Validate each teacher
+	for i, teacher := range newTeachers {
+		if err := validate.Struct(teacher); err != nil {
+			if validationErrors, ok := err.(validator.ValidationErrors); ok {
+				errorMsg := formatValidationErrors(validationErrors)
+				writeJSONError(w, http.StatusBadRequest, "Teacher #"+strconv.Itoa(i+1)+": "+errorMsg)
+				return
+			}
+			writeJSONError(w, http.StatusBadRequest, "Validation failed for teacher #"+strconv.Itoa(i+1))
+			return
+		}
 	}
 
 	addedTeachers, err := sqlconnect.AddTeachersDBHandler(newTeachers)
@@ -87,25 +136,12 @@ func AddTeacherHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	response := struct {
-		Status string           `json:"status"`
-		Count  int              `json:"count"`
-		Data   []models.Teacher `json:"data"`
-	}{
-		Status: "success",
-		Count:  len(addedTeachers),
-		Data:   addedTeachers,
-	}
-	json.NewEncoder(w).Encode(response)
+	writeJSONList(w, http.StatusCreated, addedTeachers, len(addedTeachers))
 }
 
-// PUT /teachers/{id} - Update existing teacher (full update)
+// PUT /teachers/{id} - Full update of teacher
 func UpdateTeacherHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid ID")
 		return
@@ -117,9 +153,14 @@ func UpdateTeacherHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate required fields
-	if updatedTeacher.FirstName == "" || updatedTeacher.LastName == "" || updatedTeacher.Email == "" {
-		writeJSONError(w, http.StatusBadRequest, "Missing required fields: firstName, lastName, email")
+	// Validate the teacher data
+	if err := validate.Struct(updatedTeacher); err != nil {
+		if validationErrors, ok := err.(validator.ValidationErrors); ok {
+			errorMsg := formatValidationErrors(validationErrors)
+			writeJSONError(w, http.StatusBadRequest, errorMsg)
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "Validation failed")
 		return
 	}
 
@@ -128,25 +169,12 @@ func UpdateTeacherHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	response := struct {
-		Status  string         `json:"status"`
-		Data    models.Teacher `json:"data"`
-		Message string         `json:"message,omitempty"`
-	}{
-		Status:  "success",
-		Data:    updatedTeacherFromDB,
-		Message: "Teacher updated successfully",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSONSuccess(w, http.StatusOK, updatedTeacherFromDB)
 }
 
-// PATCH /teachers/{id} - Partial update single teacher
+// PATCH /teachers/{id} - Partial update of single teacher
 func PatchOneTeacherHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid ID")
 		return
@@ -168,22 +196,10 @@ func PatchOneTeacherHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	response := struct {
-		Status  string         `json:"status"`
-		Data    models.Teacher `json:"data"`
-		Message string         `json:"message,omitempty"`
-	}{
-		Status:  "success",
-		Data:    updatedTeacher,
-		Message: "Teacher updated successfully",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSONSuccess(w, http.StatusOK, updatedTeacher)
 }
 
-// PATCH /teachers - Batch partial update multiple teachers
+// PATCH /teachers - Batch partial update of multiple teachers
 func PatchTeachersHandler(w http.ResponseWriter, r *http.Request) {
 	var updates []map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
@@ -192,7 +208,7 @@ func PatchTeachersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(updates) == 0 {
-		writeJSONError(w, http.StatusBadRequest, "No teachers to update")
+		writeJSONError(w, http.StatusBadRequest, "At least one teacher update is required")
 		return
 	}
 
@@ -201,50 +217,28 @@ func PatchTeachersHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	response := struct {
-		Status  string           `json:"status"`
-		Count   int              `json:"count"`
-		Data    []models.Teacher `json:"data"`
-		Message string           `json:"message,omitempty"`
-	}{
-		Status:  "success",
-		Count:   len(updatedTeachers),
-		Data:    updatedTeachers,
-		Message: "Teachers updated successfully",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSONList(w, http.StatusOK, updatedTeachers, len(updatedTeachers))
 }
 
 // DELETE /teachers/{id} - Delete single teacher
 func DeleteOneTeacherHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Invalid ID")
 		return
 	}
 
-	err = sqlconnect.DeleteOneTeacher(id)
-	if err != nil {
+	if err := sqlconnect.DeleteOneTeacher(id); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	response := struct {
-		Status  string `json:"status"`
-		Message string `json:"message"`
-		ID      int    `json:"id"`
-	}{
-		Status:  "success",
-		Message: "Teacher successfully deleted",
-		ID:      id,
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "success",
+		"message": "Teacher deleted successfully",
+		"id":      id,
+	})
 }
 
 // DELETE /teachers - Batch delete multiple teachers
@@ -256,7 +250,7 @@ func DeleteTeachersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(ids) == 0 {
-		writeJSONError(w, http.StatusBadRequest, "No teacher IDs provided")
+		writeJSONError(w, http.StatusBadRequest, "At least one teacher ID is required")
 		return
 	}
 
@@ -266,16 +260,11 @@ func DeleteTeachersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := struct {
-		Status     string `json:"status"`
-		Message    string `json:"message"`
-		DeletedIDs []int  `json:"deleted_ids"`
-	}{
-		Status:     "success",
-		Message:    "Teachers successfully deleted",
-		DeletedIDs: deletedIds,
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":     "success",
+		"message":    "Teachers deleted successfully",
+		"deletedIds": deletedIds,
+		"count":      len(deletedIds),
+	})
 }
