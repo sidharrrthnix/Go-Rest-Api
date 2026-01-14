@@ -11,71 +11,102 @@ import (
 	"http-api.com/utils"
 )
 
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+// getFieldMapping returns the JSON-to-struct field mapping for Teacher
+func getFieldMapping(teacher *models.Teacher) map[string]*string {
+	return map[string]*string{
+		"firstName": &teacher.FirstName,
+		"lastName":  &teacher.LastName,
+		"email":     &teacher.Email,
+		"class":     &teacher.Class,
+		"subject":   &teacher.Subject,
+	}
+}
+
+// applyUpdates applies map updates to teacher fields
+func applyUpdates(teacher *models.Teacher, updates map[string]interface{}) {
+	fieldMap := getFieldMapping(teacher)
+	for key, value := range updates {
+		if key == "id" {
+			continue // Skip ID field
+		}
+		if fieldPtr, ok := fieldMap[key]; ok {
+			if strVal, ok := value.(string); ok {
+				*fieldPtr = strVal
+			}
+		}
+	}
+}
+
+// ============================================================================
+// READ OPERATIONS
+// ============================================================================
+
 // GetTeachersDbHandler retrieves all teachers with optional filters and sorting
 func GetTeachersDbHandler(teachers []models.Teacher, r *http.Request) ([]models.Teacher, error) {
 	db, err := ConnectDB()
 	if err != nil {
-		return nil, utils.ErrorHandler(err, "error connecting to database")
+		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
 	defer db.Close()
 
 	query := "SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE 1=1"
-	var args []interface{}
+	args := []interface{}{}
 
-	// Add filters from query params
-	params := map[string]string{
+	// Add filters
+	filters := map[string]string{
 		"first_name": "first_name",
 		"last_name":  "last_name",
 		"email":      "email",
 		"class":      "class",
 		"subject":    "subject",
 	}
-	for param, dbField := range params {
-		value := r.URL.Query().Get(param)
-		if value != "" {
+	for param, dbField := range filters {
+		if value := r.URL.Query().Get(param); value != "" {
 			query += " AND " + dbField + " = ?"
 			args = append(args, value)
 		}
 	}
 
-	// Add sorting
-	sortParams := r.URL.Query()["sortby"]
-	if len(sortParams) > 0 {
+	// Add sorting (format: ?sortby=first_name:ASC&sortby=class:DESC)
+	if sortParams := r.URL.Query()["sortby"]; len(sortParams) > 0 {
+		validFields := map[string]bool{
+			"first_name": true, "last_name": true, "email": true,
+			"class": true, "subject": true,
+		}
 		orderBys := []string{}
+
 		for _, param := range sortParams {
 			parts := strings.Split(param, ":")
 			if len(parts) == 2 {
-				field := parts[0]
-				order := strings.ToUpper(parts[1])
-				// Validate field and order
-				validFields := map[string]bool{
-					"first_name": true,
-					"last_name":  true,
-					"email":      true,
-					"class":      true,
-					"subject":    true,
-				}
+				field, order := parts[0], strings.ToUpper(parts[1])
 				if validFields[field] && (order == "ASC" || order == "DESC") {
 					orderBys = append(orderBys, field+" "+order)
 				}
 			}
 		}
+
 		if len(orderBys) > 0 {
 			query += " ORDER BY " + strings.Join(orderBys, ", ")
 		}
 	}
 
+	// Execute query
 	rows, err := db.Query(query, args...)
 	if err != nil {
-		return nil, utils.ErrorHandler(err, "error querying database")
+		return nil, utils.ErrorHandler(err, "query failed")
 	}
 	defer rows.Close()
 
+	// Scan results
 	for rows.Next() {
 		var teacher models.Teacher
-		err := rows.Scan(&teacher.ID, &teacher.FirstName, &teacher.LastName, &teacher.Email, &teacher.Class, &teacher.Subject)
-		if err != nil {
-			return nil, utils.ErrorHandler(err, "error scanning row")
+		if err := rows.Scan(&teacher.ID, &teacher.FirstName, &teacher.LastName,
+			&teacher.Email, &teacher.Class, &teacher.Subject); err != nil {
+			return nil, utils.ErrorHandler(err, "scan failed")
 		}
 		teachers = append(teachers, teacher)
 	}
@@ -86,77 +117,86 @@ func GetTeachersDbHandler(teachers []models.Teacher, r *http.Request) ([]models.
 func GetTeacherByID(id int) (models.Teacher, error) {
 	db, err := ConnectDB()
 	if err != nil {
-		return models.Teacher{}, utils.ErrorHandler(err, "error connecting to database")
+		return models.Teacher{}, utils.ErrorHandler(err, "database connection failed")
 	}
 	defer db.Close()
 
 	var teacher models.Teacher
-	err = db.QueryRow("SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE id = ?", id).
-		Scan(&teacher.ID, &teacher.FirstName, &teacher.LastName, &teacher.Email, &teacher.Class, &teacher.Subject)
+	query := "SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE id = ?"
+	err = db.QueryRow(query, id).Scan(&teacher.ID, &teacher.FirstName, &teacher.LastName,
+		&teacher.Email, &teacher.Class, &teacher.Subject)
 
 	if err == sql.ErrNoRows {
 		return models.Teacher{}, utils.ErrorHandler(err, "teacher not found")
-	} else if err != nil {
-		return models.Teacher{}, utils.ErrorHandler(err, "error querying database")
+	}
+	if err != nil {
+		return models.Teacher{}, utils.ErrorHandler(err, "query failed")
 	}
 	return teacher, nil
 }
+
+// ============================================================================
+// CREATE OPERATIONS
+// ============================================================================
 
 // AddTeachersDBHandler adds multiple teachers in batch
 func AddTeachersDBHandler(newTeachers []models.Teacher) ([]models.Teacher, error) {
 	db, err := ConnectDB()
 	if err != nil {
-		return nil, utils.ErrorHandler(err, "error connecting to database")
+		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
 	defer db.Close()
 
 	stmt, err := db.Prepare("INSERT INTO teachers (first_name, last_name, email, class, subject) VALUES (?, ?, ?, ?, ?)")
 	if err != nil {
-		return nil, utils.ErrorHandler(err, "error preparing statement")
+		return nil, utils.ErrorHandler(err, "prepare statement failed")
 	}
 	defer stmt.Close()
 
 	addedTeachers := make([]models.Teacher, 0, len(newTeachers))
-	for _, newTeacher := range newTeachers {
-		res, err := stmt.Exec(newTeacher.FirstName, newTeacher.LastName, newTeacher.Email, newTeacher.Class, newTeacher.Subject)
+	for _, teacher := range newTeachers {
+		res, err := stmt.Exec(teacher.FirstName, teacher.LastName, teacher.Email,
+			teacher.Class, teacher.Subject)
 		if err != nil {
-			return nil, utils.ErrorHandler(err, "error inserting teacher")
+			return nil, utils.ErrorHandler(err, "insert failed")
 		}
-		lastID, err := res.LastInsertId()
-		if err != nil {
-			return nil, utils.ErrorHandler(err, "error getting last insert id")
-		}
-		newTeacher.ID = int(lastID)
-		addedTeachers = append(addedTeachers, newTeacher)
+
+		lastID, _ := res.LastInsertId()
+		teacher.ID = int(lastID)
+		addedTeachers = append(addedTeachers, teacher)
 	}
 	return addedTeachers, nil
 }
 
-// UpdateTeacher performs a full update of a teacher (all fields required)
+// ============================================================================
+// UPDATE OPERATIONS
+// ============================================================================
+
+// UpdateTeacher performs a full update of a teacher
 func UpdateTeacher(id int, updatedTeacher models.Teacher) (models.Teacher, error) {
 	db, err := ConnectDB()
 	if err != nil {
-		return models.Teacher{}, utils.ErrorHandler(err, "error connecting to database")
+		return models.Teacher{}, utils.ErrorHandler(err, "database connection failed")
 	}
 	defer db.Close()
 
-	// Check if teacher exists
-	var existingTeacher models.Teacher
-	err = db.QueryRow("SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE id = ?", id).
-		Scan(&existingTeacher.ID, &existingTeacher.FirstName, &existingTeacher.LastName, &existingTeacher.Email, &existingTeacher.Class, &existingTeacher.Subject)
-
+	// Verify teacher exists
+	var exists int
+	err = db.QueryRow("SELECT 1 FROM teachers WHERE id = ?", id).Scan(&exists)
 	if err == sql.ErrNoRows {
 		return models.Teacher{}, utils.ErrorHandler(err, "teacher not found")
-	} else if err != nil {
-		return models.Teacher{}, utils.ErrorHandler(err, "error querying database")
+	}
+	if err != nil {
+		return models.Teacher{}, utils.ErrorHandler(err, "query failed")
 	}
 
-	// Update the teacher
-	updatedTeacher.ID = existingTeacher.ID
-	_, err = db.Exec("UPDATE teachers SET first_name = ?, last_name = ?, email = ?, class = ?, subject = ? WHERE id = ?",
-		updatedTeacher.FirstName, updatedTeacher.LastName, updatedTeacher.Email, updatedTeacher.Class, updatedTeacher.Subject, updatedTeacher.ID)
+	// Update teacher
+	updatedTeacher.ID = id
+	_, err = db.Exec("UPDATE teachers SET first_name=?, last_name=?, email=?, class=?, subject=? WHERE id=?",
+		updatedTeacher.FirstName, updatedTeacher.LastName, updatedTeacher.Email,
+		updatedTeacher.Class, updatedTeacher.Subject, id)
 	if err != nil {
-		return models.Teacher{}, utils.ErrorHandler(err, "error updating teacher")
+		return models.Teacher{}, utils.ErrorHandler(err, "update failed")
 	}
 	return updatedTeacher, nil
 }
@@ -165,156 +205,127 @@ func UpdateTeacher(id int, updatedTeacher models.Teacher) (models.Teacher, error
 func PatchOneTeacher(id int, updates map[string]interface{}) (models.Teacher, error) {
 	db, err := ConnectDB()
 	if err != nil {
-		return models.Teacher{}, utils.ErrorHandler(err, "error connecting to database")
+		return models.Teacher{}, utils.ErrorHandler(err, "database connection failed")
 	}
 	defer db.Close()
 
-	// Check if teacher exists and get current data
-	var existingTeacher models.Teacher
-	err = db.QueryRow("SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE id = ?", id).
-		Scan(&existingTeacher.ID, &existingTeacher.FirstName, &existingTeacher.LastName, &existingTeacher.Email, &existingTeacher.Class, &existingTeacher.Subject)
-
-	if err == sql.ErrNoRows {
-		return models.Teacher{}, utils.ErrorHandler(err, "teacher not found")
-	} else if err != nil {
-		return models.Teacher{}, utils.ErrorHandler(err, "error querying database")
-	}
-
-	// Map JSON keys to struct fields
-	fieldMap := map[string]*string{
-		"firstName": &existingTeacher.FirstName,
-		"lastName":  &existingTeacher.LastName,
-		"email":     &existingTeacher.Email,
-		"class":     &existingTeacher.Class,
-		"subject":   &existingTeacher.Subject,
+	// Get current teacher
+	teacher, err := GetTeacherByID(id)
+	if err != nil {
+		return models.Teacher{}, err
 	}
 
 	// Apply updates
-	for key, value := range updates {
-		if fieldPtr, ok := fieldMap[key]; ok {
-			if strVal, ok := value.(string); ok {
-				*fieldPtr = strVal
-			}
-		}
-	}
+	applyUpdates(&teacher, updates)
 
-	// Update in database
-	_, err = db.Exec("UPDATE teachers SET first_name = ?, last_name = ?, email = ?, class = ?, subject = ? WHERE id = ?",
-		existingTeacher.FirstName, existingTeacher.LastName, existingTeacher.Email, existingTeacher.Class, existingTeacher.Subject, existingTeacher.ID)
+	// Save to database
+	_, err = db.Exec("UPDATE teachers SET first_name=?, last_name=?, email=?, class=?, subject=? WHERE id=?",
+		teacher.FirstName, teacher.LastName, teacher.Email, teacher.Class, teacher.Subject, teacher.ID)
 	if err != nil {
-		return models.Teacher{}, utils.ErrorHandler(err, "error updating teacher")
+		return models.Teacher{}, utils.ErrorHandler(err, "update failed")
 	}
-	return existingTeacher, nil
+	return teacher, nil
 }
 
-// PatchTeachers performs a batch partial update of multiple teachers
+// PatchTeachers performs batch partial updates in a transaction
 func PatchTeachers(updates []map[string]interface{}) ([]models.Teacher, error) {
 	db, err := ConnectDB()
 	if err != nil {
-		return nil, utils.ErrorHandler(err, "error connecting to database")
+		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
 	defer db.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
-		return nil, utils.ErrorHandler(err, "error beginning transaction")
+		return nil, utils.ErrorHandler(err, "transaction start failed")
 	}
 
 	updatedTeachers := []models.Teacher{}
 
 	for i, update := range updates {
-		// Extract ID
-		var id int
-		idVal, exists := update["id"]
-		if !exists {
+		// Extract and validate ID
+		id, err := extractID(update, i+1)
+		if err != nil {
 			tx.Rollback()
-			return nil, utils.ErrorHandler(fmt.Errorf("missing id"), "missing id in update #"+strconv.Itoa(i+1))
-		}
-
-		switch v := idVal.(type) {
-		case float64:
-			id = int(v)
-		case string:
-			id, err = strconv.Atoi(v)
-			if err != nil {
-				tx.Rollback()
-				return nil, utils.ErrorHandler(err, "invalid ID in update #"+strconv.Itoa(i+1))
-			}
-		default:
-			tx.Rollback()
-			return nil, utils.ErrorHandler(fmt.Errorf("invalid ID type"), "invalid ID type in update #"+strconv.Itoa(i+1))
+			return nil, err
 		}
 
 		// Get existing teacher
-		var teacherFromDb models.Teacher
-		err = tx.QueryRow("SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE id = ?", id).
-			Scan(&teacherFromDb.ID, &teacherFromDb.FirstName, &teacherFromDb.LastName, &teacherFromDb.Email, &teacherFromDb.Class, &teacherFromDb.Subject)
+		var teacher models.Teacher
+		query := "SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE id = ?"
+		err = tx.QueryRow(query, id).Scan(&teacher.ID, &teacher.FirstName, &teacher.LastName,
+			&teacher.Email, &teacher.Class, &teacher.Subject)
 
 		if err == sql.ErrNoRows {
 			tx.Rollback()
-			return nil, utils.ErrorHandler(err, "teacher with ID "+strconv.Itoa(id)+" not found")
-		} else if err != nil {
-			tx.Rollback()
-			return nil, utils.ErrorHandler(err, "error querying teacher")
+			return nil, utils.ErrorHandler(err, fmt.Sprintf("teacher #%d (ID %d) not found", i+1, id))
 		}
-
-		// Map JSON keys to struct fields
-		fieldMap := map[string]*string{
-			"firstName": &teacherFromDb.FirstName,
-			"lastName":  &teacherFromDb.LastName,
-			"email":     &teacherFromDb.Email,
-			"class":     &teacherFromDb.Class,
-			"subject":   &teacherFromDb.Subject,
-		}
-
-		// Apply updates (skip 'id' field)
-		for key, value := range update {
-			if key == "id" {
-				continue
-			}
-			if fieldPtr, ok := fieldMap[key]; ok {
-				if strVal, ok := value.(string); ok {
-					*fieldPtr = strVal
-				}
-			}
-		}
-
-		// Update in database
-		_, err = tx.Exec("UPDATE teachers SET first_name = ?, last_name = ?, email = ?, class = ?, subject = ? WHERE id = ?",
-			teacherFromDb.FirstName, teacherFromDb.LastName, teacherFromDb.Email, teacherFromDb.Class, teacherFromDb.Subject, teacherFromDb.ID)
 		if err != nil {
 			tx.Rollback()
-			return nil, utils.ErrorHandler(err, "error updating teacher #"+strconv.Itoa(i+1))
+			return nil, utils.ErrorHandler(err, fmt.Sprintf("query failed for teacher #%d", i+1))
 		}
 
-		updatedTeachers = append(updatedTeachers, teacherFromDb)
+		// Apply updates
+		applyUpdates(&teacher, update)
+
+		// Update in database
+		_, err = tx.Exec("UPDATE teachers SET first_name=?, last_name=?, email=?, class=?, subject=? WHERE id=?",
+			teacher.FirstName, teacher.LastName, teacher.Email, teacher.Class, teacher.Subject, teacher.ID)
+		if err != nil {
+			tx.Rollback()
+			return nil, utils.ErrorHandler(err, fmt.Sprintf("update failed for teacher #%d", i+1))
+		}
+
+		updatedTeachers = append(updatedTeachers, teacher)
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return nil, utils.ErrorHandler(err, "error committing transaction")
+	if err := tx.Commit(); err != nil {
+		return nil, utils.ErrorHandler(err, "transaction commit failed")
 	}
 	return updatedTeachers, nil
 }
+
+// extractID extracts and validates ID from update map
+func extractID(update map[string]interface{}, index int) (int, error) {
+	idVal, exists := update["id"]
+	if !exists {
+		return 0, utils.ErrorHandler(fmt.Errorf("missing id"), fmt.Sprintf("missing id in update #%d", index))
+	}
+
+	switch v := idVal.(type) {
+	case float64:
+		return int(v), nil
+	case int:
+		return v, nil
+	case string:
+		id, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, utils.ErrorHandler(err, fmt.Sprintf("invalid id in update #%d", index))
+		}
+		return id, nil
+	default:
+		return 0, utils.ErrorHandler(fmt.Errorf("invalid id type"), fmt.Sprintf("invalid id type in update #%d", index))
+	}
+}
+
+// ============================================================================
+// DELETE OPERATIONS
+// ============================================================================
 
 // DeleteOneTeacher deletes a single teacher by ID
 func DeleteOneTeacher(id int) error {
 	db, err := ConnectDB()
 	if err != nil {
-		return utils.ErrorHandler(err, "error connecting to database")
+		return utils.ErrorHandler(err, "database connection failed")
 	}
 	defer db.Close()
 
 	result, err := db.Exec("DELETE FROM teachers WHERE id = ?", id)
 	if err != nil {
-		return utils.ErrorHandler(err, "error deleting teacher")
+		return utils.ErrorHandler(err, "delete failed")
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return utils.ErrorHandler(err, "error getting rows affected")
-	}
-
+	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		return utils.ErrorHandler(fmt.Errorf("no rows affected"), "teacher not found")
 	}
@@ -325,52 +336,40 @@ func DeleteOneTeacher(id int) error {
 func DeleteTeachers(ids []int) ([]int, error) {
 	db, err := ConnectDB()
 	if err != nil {
-		return nil, utils.ErrorHandler(err, "error connecting to database")
+		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
 	defer db.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
-		return nil, utils.ErrorHandler(err, "error beginning transaction")
+		return nil, utils.ErrorHandler(err, "transaction start failed")
 	}
 
 	stmt, err := tx.Prepare("DELETE FROM teachers WHERE id = ?")
 	if err != nil {
 		tx.Rollback()
-		return nil, utils.ErrorHandler(err, "error preparing statement")
+		return nil, utils.ErrorHandler(err, "prepare statement failed")
 	}
 	defer stmt.Close()
 
 	deletedIds := []int{}
-
 	for _, id := range ids {
 		result, err := stmt.Exec(id)
 		if err != nil {
 			tx.Rollback()
-			return nil, utils.ErrorHandler(err, "error deleting teacher")
+			return nil, utils.ErrorHandler(err, fmt.Sprintf("delete failed for ID %d", id))
 		}
 
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected == 0 {
 			tx.Rollback()
-			return nil, utils.ErrorHandler(err, "error getting rows affected")
+			return nil, utils.ErrorHandler(fmt.Errorf("not found"), fmt.Sprintf("teacher with ID %d not found", id))
 		}
-
-		if rowsAffected > 0 {
-			deletedIds = append(deletedIds, id)
-		} else {
-			tx.Rollback()
-			return nil, utils.ErrorHandler(fmt.Errorf("teacher not found"), "teacher with ID "+strconv.Itoa(id)+" not found")
-		}
+		deletedIds = append(deletedIds, id)
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return nil, utils.ErrorHandler(err, "error committing transaction")
-	}
-
-	if len(deletedIds) < 1 {
-		return nil, utils.ErrorHandler(fmt.Errorf("no teachers deleted"), "no teachers were deleted")
+	if err := tx.Commit(); err != nil {
+		return nil, utils.ErrorHandler(err, "transaction commit failed")
 	}
 	return deletedIds, nil
 }

@@ -9,22 +9,20 @@ CREATE TABLE IF NOT EXISTS teachers (
     first_name VARCHAR(255) NOT NULL,
     last_name VARCHAR(255) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
-    class VARCHAR(100),
-    subject VARCHAR(100),
-    INDEX idx_email (email)
+    class VARCHAR(255) NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    INDEX idx_email (email),
+    INDEX idx_class (class)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- CREATE TABLE IF NOT EXISTS students (
---     id INT AUTO_INCREMENT PRIMARY KEY,
---     first_name VARCHAR(255) NOT NULL,
---     last_name VARCHAR(255) NOT NULL,
---     email VARCHAR(255) UNIQUE NOT NULL,
---     grade INT,
---     teacher_id INT,
---     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
---     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
---     FOREIGN KEY (teacher_id) REFERENCES teachers(id) ON DELETE SET NULL
--- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS students (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    first_name VARCHAR(255) NOT NULL,
+    last_name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    class VARCHAR(255) NOT NULL,
+    FOREIGN KEY (class) REFERENCES teachers(class) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 INSERT INTO teachers (first_name, last_name, email, class, subject) VALUES
