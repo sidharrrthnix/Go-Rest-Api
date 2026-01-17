@@ -30,7 +30,7 @@ func LoadDBConfig() *DBConfig {
 		Port:            GetEnv("DB_PORT", "3306"),
 		User:            GetEnv("DB_USER", "api_user"),
 		Password:        GetEnv("DB_PASSWORD", "api_password"),
-		Database:        GetEnv("DB_NAME", "http_api_db"),
+		Database:        GetEnv("DB_NAME", "SCHOOL_DB"),
 		MaxOpenConns:    GetEnvAsInt("DB_MAX_OPEN_CONNS", 10),
 		MaxIdleConns:    GetEnvAsInt("DB_MAX_IDLE_CONNS", 5),
 		ConnMaxLifetime: GetEnvAsDuration("DB_CONN_MAX_LIFETIME", 3*time.Minute),

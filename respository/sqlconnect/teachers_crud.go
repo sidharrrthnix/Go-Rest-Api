@@ -15,8 +15,8 @@ import (
 // HELPERS
 // ============================================================================
 
-// getFieldMapping returns the JSON-to-struct field mapping for Teacher
-func getFieldMapping(teacher *models.Teacher) map[string]*string {
+// getTeacherFieldMapping returns the JSON-to-struct field mapping for Teacher
+func getTeacherFieldMapping(teacher *models.Teacher) map[string]*string {
 	return map[string]*string{
 		"firstName": &teacher.FirstName,
 		"lastName":  &teacher.LastName,
@@ -26,9 +26,9 @@ func getFieldMapping(teacher *models.Teacher) map[string]*string {
 	}
 }
 
-// applyUpdates applies map updates to teacher fields
-func applyUpdates(teacher *models.Teacher, updates map[string]interface{}) {
-	fieldMap := getFieldMapping(teacher)
+// applyTeacherUpdates applies map updates to teacher fields
+func applyTeacherUpdates(teacher *models.Teacher, updates map[string]interface{}) {
+	fieldMap := getTeacherFieldMapping(teacher)
 	for key, value := range updates {
 		if key == "id" {
 			continue // Skip ID field
@@ -51,7 +51,6 @@ func GetTeachersDbHandler(teachers []models.Teacher, r *http.Request) ([]models.
 	if err != nil {
 		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	query := "SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE 1=1"
 	args := []interface{}{}
@@ -119,7 +118,6 @@ func GetTeacherByID(id int) (models.Teacher, error) {
 	if err != nil {
 		return models.Teacher{}, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	var teacher models.Teacher
 	query := "SELECT id, first_name, last_name, email, class, subject FROM teachers WHERE id = ?"
@@ -145,7 +143,6 @@ func AddTeachersDBHandler(newTeachers []models.Teacher) ([]models.Teacher, error
 	if err != nil {
 		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	stmt, err := db.Prepare("INSERT INTO teachers (first_name, last_name, email, class, subject) VALUES (?, ?, ?, ?, ?)")
 	if err != nil {
@@ -161,7 +158,10 @@ func AddTeachersDBHandler(newTeachers []models.Teacher) ([]models.Teacher, error
 			return nil, utils.ErrorHandler(err, "insert failed")
 		}
 
-		lastID, _ := res.LastInsertId()
+		lastID, err := res.LastInsertId()
+		if err != nil {
+			return nil, utils.ErrorHandler(err, "failed to get insert ID")
+		}
 		teacher.ID = int(lastID)
 		addedTeachers = append(addedTeachers, teacher)
 	}
@@ -178,7 +178,6 @@ func UpdateTeacher(id int, updatedTeacher models.Teacher) (models.Teacher, error
 	if err != nil {
 		return models.Teacher{}, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	// Verify teacher exists
 	var exists int
@@ -207,7 +206,6 @@ func PatchOneTeacher(id int, updates map[string]interface{}) (models.Teacher, er
 	if err != nil {
 		return models.Teacher{}, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	// Get current teacher
 	teacher, err := GetTeacherByID(id)
@@ -216,7 +214,7 @@ func PatchOneTeacher(id int, updates map[string]interface{}) (models.Teacher, er
 	}
 
 	// Apply updates
-	applyUpdates(&teacher, updates)
+	applyTeacherUpdates(&teacher, updates)
 
 	// Save to database
 	_, err = db.Exec("UPDATE teachers SET first_name=?, last_name=?, email=?, class=?, subject=? WHERE id=?",
@@ -233,7 +231,6 @@ func PatchTeachers(updates []map[string]interface{}) ([]models.Teacher, error) {
 	if err != nil {
 		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -244,7 +241,7 @@ func PatchTeachers(updates []map[string]interface{}) ([]models.Teacher, error) {
 
 	for i, update := range updates {
 		// Extract and validate ID
-		id, err := extractID(update, i+1)
+		id, err := extractTeacherID(update, i+1)
 		if err != nil {
 			tx.Rollback()
 			return nil, err
@@ -266,7 +263,7 @@ func PatchTeachers(updates []map[string]interface{}) ([]models.Teacher, error) {
 		}
 
 		// Apply updates
-		applyUpdates(&teacher, update)
+		applyTeacherUpdates(&teacher, update)
 
 		// Update in database
 		_, err = tx.Exec("UPDATE teachers SET first_name=?, last_name=?, email=?, class=?, subject=? WHERE id=?",
@@ -285,8 +282,8 @@ func PatchTeachers(updates []map[string]interface{}) ([]models.Teacher, error) {
 	return updatedTeachers, nil
 }
 
-// extractID extracts and validates ID from update map
-func extractID(update map[string]interface{}, index int) (int, error) {
+// extractTeacherID extracts and validates ID from update map
+func extractTeacherID(update map[string]interface{}, index int) (int, error) {
 	idVal, exists := update["id"]
 	if !exists {
 		return 0, utils.ErrorHandler(fmt.Errorf("missing id"), fmt.Sprintf("missing id in update #%d", index))
@@ -318,14 +315,16 @@ func DeleteOneTeacher(id int) error {
 	if err != nil {
 		return utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	result, err := db.Exec("DELETE FROM teachers WHERE id = ?", id)
 	if err != nil {
 		return utils.ErrorHandler(err, "delete failed")
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return utils.ErrorHandler(err, "failed to get rows affected")
+	}
 	if rowsAffected == 0 {
 		return utils.ErrorHandler(fmt.Errorf("no rows affected"), "teacher not found")
 	}
@@ -338,7 +337,6 @@ func DeleteTeachers(ids []int) ([]int, error) {
 	if err != nil {
 		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -360,7 +358,11 @@ func DeleteTeachers(ids []int) ([]int, error) {
 			return nil, utils.ErrorHandler(err, fmt.Sprintf("delete failed for ID %d", id))
 		}
 
-		rowsAffected, _ := result.RowsAffected()
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			tx.Rollback()
+			return nil, utils.ErrorHandler(err, "failed to get rows affected")
+		}
 		if rowsAffected == 0 {
 			tx.Rollback()
 			return nil, utils.ErrorHandler(fmt.Errorf("not found"), fmt.Sprintf("teacher with ID %d not found", id))

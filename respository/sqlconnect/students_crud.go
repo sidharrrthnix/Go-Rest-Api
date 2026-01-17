@@ -15,7 +15,7 @@ import (
 // HELPERS
 // ============================================================================
 
-func getFieldMappings(student *models.Student) map[string]*string {
+func getStudentFieldMapping(student *models.Student) map[string]*string {
 	return map[string]*string{
 		"firstName": &student.FirstName,
 		"lastName":  &student.LastName,
@@ -24,8 +24,8 @@ func getFieldMappings(student *models.Student) map[string]*string {
 	}
 }
 
-func applyUpdate(student *models.Student, updates map[string]interface{}) {
-	fieldMap := getFieldMappings(student)
+func applyStudentUpdate(student *models.Student, updates map[string]interface{}) {
+	fieldMap := getStudentFieldMapping(student)
 	for key, value := range updates {
 		if key == "id" {
 			continue
@@ -38,7 +38,7 @@ func applyUpdate(student *models.Student, updates map[string]interface{}) {
 	}
 }
 
-func extractIDs(update map[string]interface{}, index int) (int, error) {
+func extractStudentID(update map[string]interface{}, index int) (int, error) {
 	idVal, exists := update["id"]
 	if !exists {
 		return 0, utils.ErrorHandler(fmt.Errorf("missing id"), fmt.Sprintf("missing id in update #%d", index))
@@ -68,7 +68,6 @@ func GetStudentsDbHandler(students []models.Student, r *http.Request) ([]models.
 	if err != nil {
 		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	query := "SELECT id, first_name, last_name, email, class FROM students WHERE 1=1"
 	args := []interface{}{}
@@ -127,12 +126,11 @@ func GetStudentsDbHandler(students []models.Student, r *http.Request) ([]models.
 	return students, nil
 }
 
-func GetStudentsById(id int) (models.Student, error) {
+func GetStudentByID(id int) (models.Student, error) {
 	db, err := ConnectDB()
 	if err != nil {
 		return models.Student{}, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	var student models.Student
 	query := "SELECT id, first_name, last_name, email, class FROM students WHERE id = ?"
@@ -156,7 +154,6 @@ func AddStudentsDBHandler(newStudents []models.Student) ([]models.Student, error
 	if err != nil {
 		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	stmt, err := db.Prepare("INSERT INTO students (first_name, last_name, email, class) VALUES (?, ?, ?, ?)")
 	if err != nil {
@@ -170,7 +167,10 @@ func AddStudentsDBHandler(newStudents []models.Student) ([]models.Student, error
 		if err != nil {
 			return nil, utils.ErrorHandler(err, "insert failed")
 		}
-		lastId, _ := res.LastInsertId()
+		lastId, err := res.LastInsertId()
+		if err != nil {
+			return nil, utils.ErrorHandler(err, "failed to get insert ID")
+		}
 		student.ID = int(lastId)
 		addedStudents = append(addedStudents, student)
 	}
@@ -186,7 +186,6 @@ func UpdateStudent(id int, updatedStudent models.Student) (models.Student, error
 	if err != nil {
 		return models.Student{}, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	// Verify student exists
 	var exists int
@@ -213,16 +212,15 @@ func PatchOneStudent(id int, updates map[string]interface{}) (models.Student, er
 	if err != nil {
 		return models.Student{}, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	// Get current student
-	student, err := GetStudentsById(id)
+	student, err := GetStudentByID(id)
 	if err != nil {
 		return models.Student{}, err
 	}
 
 	// Apply updates
-	applyUpdate(&student, updates)
+	applyStudentUpdate(&student, updates)
 
 	// Save to database
 	_, err = db.Exec("UPDATE students SET first_name=?, last_name=?, email=?, class=? WHERE id=?",
@@ -238,7 +236,6 @@ func PatchStudents(updates []map[string]interface{}) ([]models.Student, error) {
 	if err != nil {
 		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -249,7 +246,7 @@ func PatchStudents(updates []map[string]interface{}) ([]models.Student, error) {
 
 	for i, update := range updates {
 		// Extract and validate ID
-		id, err := extractIDs(update, i+1)
+		id, err := extractStudentID(update, i+1)
 		if err != nil {
 			tx.Rollback()
 			return nil, err
@@ -270,7 +267,7 @@ func PatchStudents(updates []map[string]interface{}) ([]models.Student, error) {
 		}
 
 		// Apply updates
-		applyUpdate(&student, update)
+		applyStudentUpdate(&student, update)
 
 		// Update in database
 		_, err = tx.Exec("UPDATE students SET first_name=?, last_name=?, email=?, class=? WHERE id=?",
@@ -298,14 +295,16 @@ func DeleteOneStudent(id int) error {
 	if err != nil {
 		return utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	result, err := db.Exec("DELETE FROM students WHERE id = ?", id)
 	if err != nil {
 		return utils.ErrorHandler(err, "delete failed")
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return utils.ErrorHandler(err, "failed to get rows affected")
+	}
 	if rowsAffected == 0 {
 		return utils.ErrorHandler(fmt.Errorf("no rows affected"), "student not found")
 	}
@@ -317,7 +316,6 @@ func DeleteStudents(ids []int) ([]int, error) {
 	if err != nil {
 		return nil, utils.ErrorHandler(err, "database connection failed")
 	}
-	defer db.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -339,7 +337,11 @@ func DeleteStudents(ids []int) ([]int, error) {
 			return nil, utils.ErrorHandler(err, fmt.Sprintf("delete failed for ID %d", id)) // ✅ Fixed
 		}
 
-		rowsAffected, _ := result.RowsAffected()
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			tx.Rollback()
+			return nil, utils.ErrorHandler(err, "failed to get rows affected")
+		}
 		if rowsAffected == 0 {
 			tx.Rollback()
 			return nil, utils.ErrorHandler(fmt.Errorf("not found"), fmt.Sprintf("student with ID %d not found", id))
