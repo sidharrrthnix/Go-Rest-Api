@@ -44,7 +44,7 @@ func main() {
 
 	rl := middlewares.NewRateLimiter(10, time.Minute)
 
-	handler := utils.ApplyMiddlewares(router.NewRouter(),
+	handler := utils.ApplyMiddlewares(router.MainRouter(),
 		middlewares.Cors,
 		rl.Middleware,
 		middlewares.ResponseTimeMiddleware,

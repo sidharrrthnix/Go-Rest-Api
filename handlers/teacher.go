@@ -203,14 +203,24 @@ func DeleteTeachersHandler(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSONList(w, http.StatusOK, deletedIds, len(deletedIds))
 }
 
-func GetStudentsByTeacherId(w http.ResponseWriter, r *http.Request) {
-	teacherId := r.PathValue("id")
+func GetStudentsByTeacherID(w http.ResponseWriter, r *http.Request) {
+	teacherID := r.PathValue("id")
 	var students []models.Student
 
-	student, err := sqlconnect.GetStudentsByTeacherIdFromDb(teacherId, students)
+	student, err := sqlconnect.GetStudentsByTeacherIdFromDb(teacherID, students)
 	if err != nil {
 		utils.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	utils.WriteJSONList(w, http.StatusOK, student, len(student))
+}
+
+func GetStudentCountByTeacherID(w http.ResponseWriter, r *http.Request) {
+	teacherID := r.PathValue("id")
+	studentCount, err := sqlconnect.GetStudentCountByTeacherIDFromDB(teacherID)
+	if err != nil {
+		utils.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	utils.WriteJSONSuccess(w, http.StatusOK, studentCount)
 }

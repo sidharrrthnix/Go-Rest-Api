@@ -391,7 +391,7 @@ func GetStudentsByTeacherIdFromDb(teacherId string, students []models.Student) (
 
 	for rows.Next() {
 		var student models.Student
-		err := rows.Scan(&student.ID, &student.FirstName, &student.LastName, &student.Email, &student.Class)
+		err = rows.Scan(&student.ID, &student.FirstName, &student.LastName, &student.Email, &student.Class)
 		if err != nil {
 			return nil, utils.ErrorHandler(err, "error retrieving data")
 		}
@@ -402,4 +402,21 @@ func GetStudentsByTeacherIdFromDb(teacherId string, students []models.Student) (
 		return nil, utils.ErrorHandler(err, "error retrieving data")
 	}
 	return students, nil
+}
+
+func GetStudentCountByTeacherIDFromDB(teacherID string) (int, error) {
+	db, err := ConnectDB()
+	if err != nil {
+		return 0, utils.ErrorHandler(err, "error retrieving data")
+	}
+
+	defer db.Close()
+
+	query := `SELECT COUNT(*) FROM students WHERE class = (SELECT class FROM teachers WHERE id = ?)`
+	var studentCount int
+	err = db.QueryRow(query, teacherID).Scan(&studentCount)
+	if err != nil {
+		return 0, utils.ErrorHandler(err, "error retrieving data")
+	}
+	return studentCount, nil
 }
